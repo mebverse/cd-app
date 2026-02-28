@@ -13,12 +13,59 @@ jobs:
     name: Deploy
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
 
+      # Ensure the Test environment is reset back to main after merge
       - name: Reset Divio Test environment branch to main
-        run: "curl -X PATCH --data 'branch=main' --header 'Authorization: Token ${{ secrets.API_TOKEN }}' https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/"
+        run: >
+          curl -X PATCH
+          --data "branch=main"
+          --header "Authorization: Token ${{ secrets.API_TOKEN }}"
+          https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/
 
-      - name: Deploy live app
-        run: "curl -X POST --data 'environment=${{ secrets.LIVE_ENVIRONMENT_UUID }}' --header 'Authorization: Token ${{ secrets.API_TOKEN }}' https://api.divio.com/apps/v3/deployments/"
+      # Trigger Live deployment and monitor its outcome
+      - name: Deploy live application
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          LIVE_ENVIRONMENT_UUID: ${{ secrets.LIVE_ENVIRONMENT_UUID }}
+        run: |
+          set -euo pipefail
+
+          # Trigger the deployment and capture the deployment UUID
+          DEPLOY_UUID=$(curl -s -X POST \
+            --data "environment=${LIVE_ENVIRONMENT_UUID}" \
+            --header "Authorization: Token ${API_TOKEN}" \
+            https://api.divio.com/apps/v3/deployments/ \
+            | jq -r '.uuid')
+
+          echo "Started live deployment: ${DEPLOY_UUID}"
+
+          # Poll deployment status until completion
+          for i in {1..120}; do
+            RESP=$(curl -s \
+              --header "Authorization: Token ${API_TOKEN}" \
+              "https://api.divio.com/apps/v3/deployments/${DEPLOY_UUID}/")
+
+            STATUS=$(echo "$RESP" | jq -r '.status // empty')
+            SUCCESS=$(echo "$RESP" | jq -r '.success')
+
+            echo "Live deployment status: ${STATUS:-unknown}"
+
+            if [ "$SUCCESS" = "true" ]; then
+              echo "Live deployment succeeded."
+              exit 0
+            fi
+
+            if [ "$SUCCESS" = "false" ]; then
+              echo "Live deployment failed. Check Divio deployment logs for UUID: ${DEPLOY_UUID}"
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for live deployment ${DEPLOY_UUID}"
+          exit 1

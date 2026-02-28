@@ -20,7 +20,51 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Point Divio Test environment to PR branch
-        run: "curl -X PATCH --data 'branch=${{ github.head_ref }}' --header 'Authorization: Token ${{ secrets.API_TOKEN }}' https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/"
+        run: >
+          curl -X PATCH
+          --data "branch=${{ github.head_ref }}"
+          --header "Authorization: Token ${{ secrets.API_TOKEN }}"
+          https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/
 
-      - name: Deploy test app
-        run: "curl -X POST --data 'environment=${{ secrets.TEST_ENVIRONMENT_UUID }}' --header 'Authorization: Token ${{ secrets.API_TOKEN }}' https://api.divio.com/apps/v3/deployments/"
+      - name: Deploy test app (wait for result)
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          TEST_ENVIRONMENT_UUID: ${{ secrets.TEST_ENVIRONMENT_UUID }}
+        run: |
+          set -euo pipefail
+
+          # Trigger deployment and capture UUID
+          DEPLOY_UUID=$(curl -s -X POST \
+            --data "environment=${TEST_ENVIRONMENT_UUID}" \
+            --header "Authorization: Token ${API_TOKEN}" \
+            https://api.divio.com/apps/v3/deployments/ \
+            | jq -r '.uuid')
+
+          echo "Started deployment: ${DEPLOY_UUID}"
+
+          # Poll until success is true/false (non-null)
+          for i in {1..120}; do
+            RESP=$(curl -s \
+              --header "Authorization: Token ${API_TOKEN}" \
+              "https://api.divio.com/apps/v3/deployments/${DEPLOY_UUID}/")
+
+            STATUS=$(echo "$RESP" | jq -r '.status // empty')
+            SUCCESS=$(echo "$RESP" | jq -r '.success')
+
+            echo "Deployment status: ${STATUS:-unknown}"
+
+            if [ "$SUCCESS" = "true" ]; then
+              echo "Deployment succeeded."
+              exit 0
+            fi
+
+            if [ "$SUCCESS" = "false" ]; then
+              echo "Deployment failed. Check Divio deployment logs for UUID: ${DEPLOY_UUID}"
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for deployment ${DEPLOY_UUID}"
+          exit 1

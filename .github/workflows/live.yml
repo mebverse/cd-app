@@ -8,25 +8,27 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: Deploy
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # Ensure the Test environment is reset back to main after merge
       - name: Reset Divio Test environment branch to main
         run: >
-          curl -X PATCH
+          curl -sS --fail -X PATCH
           --data "branch=main"
           --header "Authorization: Token ${{ secrets.API_TOKEN }}"
           https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/
 
-      # Trigger Live deployment and monitor its outcome
       - name: Deploy live application
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
@@ -34,18 +36,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Trigger the deployment and capture the deployment UUID
-          DEPLOY_UUID=$(curl -s -X POST \
+          # Trigger deployment and capture UUID
+          DEPLOY_UUID=$(curl -sS --fail -X POST \
             --data "environment=${LIVE_ENVIRONMENT_UUID}" \
             --header "Authorization: Token ${API_TOKEN}" \
             https://api.divio.com/apps/v3/deployments/ \
             | jq -r '.uuid')
 
+          if [ -z "${DEPLOY_UUID}" ] || [ "${DEPLOY_UUID}" = "null" ]; then
+            echo "Failed to start live deployment (no UUID returned)."
+            exit 1
+          fi
+
           echo "Started live deployment: ${DEPLOY_UUID}"
 
           # Poll deployment status until completion
           for i in {1..120}; do
-            RESP=$(curl -s \
+            RESP=$(curl -sS --fail \
               --header "Authorization: Token ${API_TOKEN}" \
               "https://api.divio.com/apps/v3/deployments/${DEPLOY_UUID}/")
 

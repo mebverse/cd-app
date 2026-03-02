@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: divio-test-environment
   cancel-in-progress: true
@@ -15,18 +18,20 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Point Divio Test environment to PR branch
         run: >
-          curl -X PATCH
+          curl -sS --fail -X PATCH
           --data "branch=${{ github.head_ref }}"
           --header "Authorization: Token ${{ secrets.API_TOKEN }}"
           https://api.divio.com/apps/v3/environments/${{ secrets.TEST_ENVIRONMENT_UUID }}/
 
-      - name: Deploy test app (wait for result)
+      - name: Deploy test application
         env:
           API_TOKEN: ${{ secrets.API_TOKEN }}
           TEST_ENVIRONMENT_UUID: ${{ secrets.TEST_ENVIRONMENT_UUID }}
@@ -34,37 +39,42 @@ jobs:
           set -euo pipefail
 
           # Trigger deployment and capture UUID
-          DEPLOY_UUID=$(curl -s -X POST \
+          DEPLOY_UUID=$(curl -sS --fail -X POST \
             --data "environment=${TEST_ENVIRONMENT_UUID}" \
             --header "Authorization: Token ${API_TOKEN}" \
             https://api.divio.com/apps/v3/deployments/ \
             | jq -r '.uuid')
 
-          echo "Started deployment: ${DEPLOY_UUID}"
+          if [ -z "${DEPLOY_UUID}" ] || [ "${DEPLOY_UUID}" = "null" ]; then
+            echo "Failed to start test deployment (no UUID returned)."
+            exit 1
+          fi
+
+          echo "Started test deployment: ${DEPLOY_UUID}"
 
           # Poll until success is true/false (non-null)
           for i in {1..120}; do
-            RESP=$(curl -s \
+            RESP=$(curl -sS --fail \
               --header "Authorization: Token ${API_TOKEN}" \
               "https://api.divio.com/apps/v3/deployments/${DEPLOY_UUID}/")
 
             STATUS=$(echo "$RESP" | jq -r '.status // empty')
             SUCCESS=$(echo "$RESP" | jq -r '.success')
 
-            echo "Deployment status: ${STATUS:-unknown}"
+            echo "Test deployment status: ${STATUS:-unknown}"
 
             if [ "$SUCCESS" = "true" ]; then
-              echo "Deployment succeeded."
+              echo "Test deployment succeeded."
               exit 0
             fi
 
             if [ "$SUCCESS" = "false" ]; then
-              echo "Deployment failed. Check Divio deployment logs for UUID: ${DEPLOY_UUID}"
+              echo "Test deployment failed. Check Divio deployment logs for UUID: ${DEPLOY_UUID}"
               exit 1
             fi
 
             sleep 10
           done
 
-          echo "Timed out waiting for deployment ${DEPLOY_UUID}"
+          echo "Timed out waiting for test deployment ${DEPLOY_UUID}"
           exit 1
